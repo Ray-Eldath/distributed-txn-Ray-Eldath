@@ -28,11 +28,11 @@ func NewCommit(request *kvrpcpb.CommitRequest) Commit {
 
 func (c *Commit) PrepareWrites(txn *mvcc.MvccTxn) (interface{}, error) {
 	commitTs := c.request.CommitVersion
-	// YOUR CODE HERE (lab1).
 	// Check if the commitTs is invalid, the commitTs must be greater than the transaction startTs. If not
 	// report unexpected error.
-	panic("PrepareWrites is not implemented for commit command")
-
+	if commitTs <= txn.StartTS {
+		panic("Commit.PrepareWrites: time went backwards")
+	}
 	response := new(kvrpcpb.CommitResponse)
 
 	// Commit each key.
@@ -53,18 +53,39 @@ func commitKey(key []byte, commitTs uint64, txn *mvcc.MvccTxn, response interfac
 	}
 
 	// If there is no correspond lock for this transaction.
-	panic("commitKey is not implemented yet")
 	log.Debug("commitKey", zap.Uint64("startTS", txn.StartTS),
 		zap.Uint64("commitTs", commitTs),
 		zap.String("key", hex.EncodeToString(key)))
 	if lock == nil || lock.Ts != txn.StartTS {
-		// YOUR CODE HERE (lab1).
 		// Key is locked by a different transaction, or there is no lock on the key. It's needed to
 		// check the commit/rollback record for this key, if nothing is found report lock not found
 		// error. Also the commit request could be stale that it's already committed or rolled back.
-
 		respValue := reflect.ValueOf(response)
-		keyError := &kvrpcpb.KeyError{Retryable: fmt.Sprintf("lock not found for key %v", key)}
+		var keyError *kvrpcpb.KeyError
+
+		write, conflictTs, err := txn.MostRecentWrite(key)
+		if err != nil {
+			return nil, err
+		}
+		if write != nil && write.StartTS == txn.StartTS {
+			// if write record by current txn found
+			if write.Kind == mvcc.WriteKindRollback {
+				keyError = &kvrpcpb.KeyError{Abort: fmt.Sprintf("already aborted %v", key)}
+			} else {
+				// already committed, stale commit request
+				return nil, nil
+			}
+		}
+		if lock == nil {
+			keyError = &kvrpcpb.KeyError{Retryable: fmt.Sprintf("lock not found for key %v", key)}
+		} else {
+			keyError = &kvrpcpb.KeyError{Conflict: &kvrpcpb.WriteConflict{
+				StartTs:    txn.StartTS,
+				ConflictTs: conflictTs,
+				Key:        key,
+				Primary:    lock.Primary,
+			}}
+		}
 		reflect.Indirect(respValue).FieldByName("Error").Set(reflect.ValueOf(keyError))
 		return response, nil
 	}

@@ -65,22 +65,56 @@ func (p *Prewrite) prewriteMutation(txn *mvcc.MvccTxn, mut *kvrpcpb.Mutation) (*
 	key := mut.Key
 	log.Debug("prewrite key", zap.Uint64("start_ts", txn.StartTS),
 		zap.String("key", hex.EncodeToString(key)))
-	// YOUR CODE HERE (lab1).
 	// Check for write conflicts.
 	// Hint: Check the interafaces provided by `mvcc.MvccTxn`. The error type `kvrpcpb.WriteConflict` is used
 	//		 denote to write conflict error, try to set error information properly in the `kvrpcpb.KeyError`
 	//		 response.
-	panic("prewriteMutation is not implemented yet")
+	keyError := &kvrpcpb.KeyError{}
+	write, conflictTS, err := txn.MostRecentWrite(key)
+	if err != nil {
+		return nil, err
+	}
+	if write != nil {
+		log.Debug("prewrite key WriteConflict",
+			zap.String("key", hex.EncodeToString(key)),
+			zap.Uint64("write.startTS", write.StartTS),
+			zap.Uint64("write.commitTS", conflictTS),
+			zap.Uint64("physical(write.commitTS)", physical(conflictTS)),
+			zap.Int("write.kind", int(write.Kind)))
+		if conflictTS >= txn.StartTS {
+			keyError.Conflict = &kvrpcpb.WriteConflict{
+				StartTs:    txn.StartTS,
+				ConflictTs: conflictTS,
+				Key:        key,
+				Primary:    p.request.GetPrimaryLock(),
+			}
+			return keyError, nil
+		}
+	}
 
-	// YOUR CODE HERE (lab1).
 	// Check if key is locked. Report key is locked error if lock does exist, note the key could be locked
 	// by this transaction already and the current prewrite request is stale.
-	panic("check lock in prewrite is not implemented yet")
+	lock, err := txn.GetLock(key)
+	if err != nil {
+		return nil, err
+	}
+	if lock != nil {
+		if lock.Ts == txn.StartTS {
+			return nil, nil
+		}
+		keyError.Locked = lock.Info(key)
+		return keyError, nil
+	}
 
-	// YOUR CODE HERE (lab1).
 	// Write a lock and value.
 	// Hint: Check the interfaces provided by `mvccTxn.Txn`.
-	panic("lock record generation is not implemented yet")
+	txn.PutValue(mut.Key, mut.Value)
+	txn.PutLock(key, &mvcc.Lock{
+		Primary: p.request.GetPrimaryLock(),
+		Ts:      txn.StartTS,
+		Ttl:     p.request.GetLockTtl(),
+		Kind:    mvcc.WriteKindFromProto(mut.GetOp()),
+	})
 
 	return nil, nil
 }

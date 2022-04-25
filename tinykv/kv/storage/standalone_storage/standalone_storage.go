@@ -26,17 +26,30 @@ func (s *StandAloneStorage) Stop() error {
 }
 
 func (s *StandAloneStorage) Reader(ctx *kvrpcpb.Context) (storage.StorageReader, error) {
-	// YOUR CODE HERE (lab1).
-	panic("not implemented yet")
-	return nil, nil
+	return NewBadgerReader(s.db.NewTransaction(false)), nil
 }
 
 func (s *StandAloneStorage) Write(ctx *kvrpcpb.Context, batch []storage.Modify) error {
-	// YOUR CODE HERE (lab1).
-	// Try to check the definition of `storage.Modify` and txn interface of `badger`.
-	// As the column family is not supported by `badger`, a wrapper is used to simulate it.
-	panic("not implemented yet")
-	return nil
+	cmit := func(txn *badger.Txn, key []byte, modify *storage.Modify) error {
+		switch m := modify.Data.(type) {
+		case storage.Put:
+			return txn.Set(key, m.Value)
+		case storage.Delete:
+			return txn.Delete(key)
+		}
+		panic("unsupported Modify type")
+	}
+
+	txn := s.db.NewTransaction(true)
+	for _, modify := range batch {
+		key := engine_util.KeyWithCF(modify.Cf(), modify.Key())
+		if err := cmit(txn, key, &modify); err == badger.ErrTxnTooBig {
+			_ = txn.Commit()
+			txn = s.db.NewTransaction(true)
+			_ = cmit(txn, key, &modify)
+		}
+	}
+	return txn.Commit()
 }
 
 type BadgerReader struct {
