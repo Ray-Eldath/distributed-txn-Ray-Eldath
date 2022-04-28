@@ -147,8 +147,22 @@ func (s *tikvSnapshot) get(bo *Backoffer, k kv.Key) ([]byte, error) {
 			// If the key error is a lock, there are 2 possible cases:
 			//   1. The transaction is during commit, wait for a while and retry.
 			//   2. The transaction is dead with some locks left, resolve it.
-			// YOUR CODE HERE (lab2).
-			panic("YOUR CODE HERE")
+			lock, err1 := extractLockFromKeyErr(keyErr)
+			if err1 != nil {
+				return nil, errors.Trace(err1)
+			}
+			logutil.BgLogger().Debug("get encounters lock",
+				zap.Stringer("lock", lock))
+			msBeforeExpired, _, err := s.store.lockResolver.ResolveLocks(bo, lock.TxnID, []*Lock{lock})
+			if err != nil {
+				return nil, errors.Trace(err)
+			}
+			if msBeforeExpired > 0 {
+				err = bo.BackoffWithMaxSleep(BoTxnLock, int(msBeforeExpired), errors.Errorf("snapshot get locked"))
+				if err != nil {
+					return nil, errors.Trace(err)
+				}
+			}
 			continue
 		}
 		return val, nil
